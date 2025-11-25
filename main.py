@@ -143,19 +143,20 @@ def build_lecture(topic: LectureTopic) -> str:
         "carry the central insight with you and notice how often it appears in headlines, experiments, or historical case studies.",
         "The more you look, the more this idea will reveal layers you may have overlooked before.",
     )
-    return "\n\n".join(
-        [
-            momentum,
-            scaffolding,
-            historical,
-            modern,
-            application,
-            challenge,
-            synthesis,
-            reflection,
-            closing,
-        ]
-    )
+    sentences = [
+        topic.hook,
+        topic.core_idea,
+        historical,
+        modern,
+        application,
+        challenge,
+        synthesis,
+        reflection,
+        closing,
+    ]
+
+    summary = sentences[:2]
+    return _compose_paragraph(*summary)
 
 
 async def _synthesize_audio_file(text: str, voice: str = DEFAULT_VOICE) -> str:
