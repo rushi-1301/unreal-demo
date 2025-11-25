@@ -1,10 +1,17 @@
+import io
+import logging
+import uuid
+
 from collections import deque
 from dataclasses import dataclass
 from random import shuffle
-from typing import Dict
+from typing import Any, Dict
 
-from fastapi import FastAPI
+from gtts import gTTS
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 
 @dataclass
@@ -79,6 +86,11 @@ shuffle(shuffle_list)
 TOPICS.clear()
 TOPICS.extend(shuffle_list)
 
+DEFAULT_VOICE = "en"
+AUDIO_OUTPUT_FORMAT = "audio/mpeg"
+AUDIO_STORAGE_DIR = Path("generated_audio")
+AUDIO_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def _rotate_topics() -> LectureTopic:
     topic = TOPICS.popleft()
@@ -146,6 +158,24 @@ def build_lecture(topic: LectureTopic) -> str:
     )
 
 
+async def _synthesize_audio_file(text: str, voice: str = DEFAULT_VOICE) -> str:
+    """Generate MP3 audio using gTTS, persist it, and return the filename."""
+
+    try:
+        tts = gTTS(text=text, lang=voice)
+        buffer = io.BytesIO()
+        tts.write_to_fp(buffer)
+    except Exception as exc:  # pragma: no cover - network dependent
+        raise RuntimeError("gTTS synthesis failed") from exc
+
+    filename = f"{uuid.uuid4().hex}.mp3"
+    file_path = AUDIO_STORAGE_DIR / filename
+    with file_path.open("wb") as audio_file:
+        audio_file.write(buffer.getvalue())
+
+    return filename
+
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -155,9 +185,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.mount("/audio", StaticFiles(directory=AUDIO_STORAGE_DIR), name="audio")
+
 
 @app.get("/lecture")
-def get_lecture() -> Dict[str, str]:
+async def get_lecture(request: Request) -> Dict[str, Any]:
     topic = _rotate_topics()
     lecture_text = build_lecture(topic)
-    return {"topic": topic.name, "lecture": lecture_text}
+    audio_payload: Dict[str, Any] | None = None
+    audio_error: str | None = None
+
+    try:
+        filename = await _synthesize_audio_file(lecture_text)
+        audio_url = request.url_for("audio", path=filename)
+        audio_payload = {
+            "voice": DEFAULT_VOICE,
+            "format": AUDIO_OUTPUT_FORMAT,
+            "url": str(audio_url),
+            "mime_type": AUDIO_OUTPUT_FORMAT,
+        }
+    except Exception as exc:  # pragma: no cover - network dependent
+        logging.getLogger(__name__).warning("Audio synthesis failed: %s", exc)
+        audio_error = "Text-to-speech is temporarily unavailable."
+
+    return {
+        "topic": topic.name,
+        "lecture": lecture_text,
+        "audio": audio_payload,
+        "audio_error": audio_error,
+    }
