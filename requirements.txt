@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 edge-tts
 gTTS
+googletrans==4.0.0

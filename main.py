@@ -5,12 +5,13 @@ import uuid
 from collections import deque
 from dataclasses import dataclass
 from random import shuffle
-from typing import Any, Dict
+from typing import Any, Dict, List
 
-from gtts import gTTS
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from googletrans import Translator
+from gtts import gTTS
 from pathlib import Path
 
 
@@ -90,6 +91,12 @@ DEFAULT_VOICE = "en"
 AUDIO_OUTPUT_FORMAT = "audio/mpeg"
 AUDIO_STORAGE_DIR = Path("generated_audio")
 AUDIO_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+LANGUAGES: List[LanguageConfig] = [
+    LanguageConfig(name="English", code="en"),
+    LanguageConfig(name="Hindi", code="hi"),
+    LanguageConfig(name="Gujarati", code="gu"),
+]
+TRANSLATOR = Translator()
 
 
 def _rotate_topics() -> LectureTopic:
@@ -159,6 +166,17 @@ def build_lecture(topic: LectureTopic) -> str:
     return _compose_paragraph(*summary)
 
 
+def _translate_text(text: str, language_code: str) -> str:
+    if language_code == DEFAULT_VOICE:
+        return text
+
+    try:
+        translation = TRANSLATOR.translate(text, dest=language_code)
+        return translation.text
+    except Exception as exc:  # pragma: no cover - network dependent
+        raise RuntimeError(f"Translation to '{language_code}' failed") from exc
+
+
 async def _synthesize_audio_file(text: str, voice: str = DEFAULT_VOICE) -> str:
     """Generate MP3 audio using gTTS, persist it, and return the filename."""
 
@@ -193,25 +211,45 @@ app.mount("/audio", StaticFiles(directory=AUDIO_STORAGE_DIR), name="audio")
 async def get_lecture(request: Request) -> Dict[str, Any]:
     topic = _rotate_topics()
     lecture_text = build_lecture(topic)
-    audio_payload: Dict[str, Any] | None = None
-    audio_error: str | None = None
+    language_payloads: List[Dict[str, Any]] = []
 
-    try:
-        filename = await _synthesize_audio_file(lecture_text)
-        audio_url = request.url_for("audio", path=filename)
-        audio_payload = {
-            "voice": DEFAULT_VOICE,
-            "format": AUDIO_OUTPUT_FORMAT,
-            "url": str(audio_url),
-            "mime_type": AUDIO_OUTPUT_FORMAT,
-        }
-    except Exception as exc:  # pragma: no cover - network dependent
-        logging.getLogger(__name__).warning("Audio synthesis failed: %s", exc)
-        audio_error = "Text-to-speech is temporarily unavailable."
+    for language in LANGUAGES:
+        translation_error: str | None = None
+        audio_error: str | None = None
+
+        try:
+            text_payload = _translate_text(lecture_text, language.code)
+        except Exception as exc:  # pragma: no cover - network dependent
+            logging.getLogger(__name__).warning("Translation failed for %s: %s", language.name, exc)
+            translation_error = "Translation is temporarily unavailable. Showing English text instead."
+            text_payload = lecture_text
+
+        audio_payload: Dict[str, Any] | None = None
+        try:
+            filename = await _synthesize_audio_file(text_payload, voice=language.code)
+            audio_url = request.url_for("audio", path=filename)
+            audio_payload = {
+                "voice": language.code,
+                "format": AUDIO_OUTPUT_FORMAT,
+                "url": str(audio_url),
+                "mime_type": AUDIO_OUTPUT_FORMAT,
+            }
+        except Exception as exc:  # pragma: no cover - network dependent
+            logging.getLogger(__name__).warning("Audio synthesis failed for %s: %s", language.name, exc)
+            audio_error = "Text-to-speech is temporarily unavailable."
+
+        language_payloads.append(
+            {
+                "language": language.name,
+                "code": language.code,
+                "text": text_payload,
+                "audio": audio_payload,
+                "translation_error": translation_error,
+                "audio_error": audio_error,
+            }
+        )
 
     return {
         "topic": topic.name,
-        "lecture": lecture_text,
-        "audio": audio_payload,
-        "audio_error": audio_error,
+        "languages": language_payloads,
     }
