@@ -26,6 +26,12 @@ class LectureTopic:
     reflection: str
 
 
+@dataclass(frozen=True)
+class LanguageConfig:
+    name: str
+    code: str
+
+
 TOPICS = deque([
     LectureTopic(
         name="Plate Tectonics",
