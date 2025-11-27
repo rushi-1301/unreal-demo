@@ -10,8 +10,8 @@ from typing import Any, Dict, List
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from googletrans import Translator
 from gtts import gTTS
+from deep_translator import GoogleTranslator
 from pathlib import Path
 
 
@@ -102,7 +102,6 @@ LANGUAGES: List[LanguageConfig] = [
     LanguageConfig(name="Hindi", code="hi"),
     LanguageConfig(name="Gujarati", code="gu"),
 ]
-TRANSLATOR = Translator()
 
 
 def _rotate_topics() -> LectureTopic:
@@ -177,8 +176,8 @@ def _translate_text(text: str, language_code: str) -> str:
         return text
 
     try:
-        translation = TRANSLATOR.translate(text, dest=language_code)
-        return translation.text
+        translator = GoogleTranslator(source="auto", target=language_code)
+        return translator.translate(text)
     except Exception as exc:  # pragma: no cover - network dependent
         raise RuntimeError(f"Translation to '{language_code}' failed") from exc
 
