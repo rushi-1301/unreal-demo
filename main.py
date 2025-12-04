@@ -1,6 +1,6 @@
-import io
 import logging
 import uuid
+import os
 
 from collections import deque
 from dataclasses import dataclass
@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from gtts import gTTS
+from google.cloud import texttospeech
 from deep_translator import GoogleTranslator
 from pathlib import Path
 
@@ -97,6 +97,43 @@ DEFAULT_VOICE = "en"
 AUDIO_OUTPUT_FORMAT = "audio/mpeg"
 AUDIO_STORAGE_DIR = Path("generated_audio")
 AUDIO_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Google Cloud TTS Configuration
+# Support both local file (development) and environment variable (production)
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+
+if GOOGLE_CREDENTIALS_JSON:
+    # Production: credentials from environment variable
+    # Write the credentials to a temporary file
+    import json
+    import tempfile
+    
+    credentials_data = json.loads(GOOGLE_CREDENTIALS_JSON)
+    temp_credentials = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
+    json.dump(credentials_data, temp_credentials)
+    temp_credentials.close()
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_credentials.name
+else:
+    # Local development: use credentials.json file
+    CREDENTIALS_PATH = Path("credentials.json")
+    if CREDENTIALS_PATH.exists():
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(CREDENTIALS_PATH.absolute())
+    else:
+        raise FileNotFoundError(
+            "Google Cloud credentials not found. "
+            "Please set GOOGLE_CREDENTIALS_JSON environment variable or create credentials.json file."
+        )
+
+# Initialize Google Cloud TTS client
+tts_client = texttospeech.TextToSpeechClient()
+
+# Voice configurations for Google Cloud TTS
+VOICE_CONFIGS = {
+    "en": {"language_code": "en-US", "name": "en-US-Neural2-C"},
+    "hi": {"language_code": "hi-IN", "name": "hi-IN-Neural2-A"},
+    "gu": {"language_code": "gu-IN", "name": "gu-IN-Wavenet-A"},
+}
+
 LANGUAGES: List[LanguageConfig] = [
     LanguageConfig(name="English", code="en"),
     LanguageConfig(name="Hindi", code="hi"),
@@ -183,19 +220,44 @@ def _translate_text(text: str, language_code: str) -> str:
 
 
 async def _synthesize_audio_file(text: str, voice: str = DEFAULT_VOICE) -> str:
-    """Generate MP3 audio using gTTS, persist it, and return the filename."""
+    """Generate MP3 audio using Google Cloud Text-to-Speech, persist it, and return the filename."""
 
     try:
-        tts = gTTS(text=text, lang=voice)
-        buffer = io.BytesIO()
-        tts.write_to_fp(buffer)
+        # Configure the voice settings
+        voice_config = VOICE_CONFIGS.get(voice, VOICE_CONFIGS["en"])
+        
+        # Set up the synthesis input
+        synthesis_input = texttospeech.SynthesisInput(text=text)
+        
+        # Configure voice parameters
+        voice_params = texttospeech.VoiceSelectionParams(
+            language_code=voice_config["language_code"],
+            name=voice_config["name"],
+        )
+        
+        # Configure audio settings
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=1.0,
+            pitch=0.0,
+        )
+        
+        # Perform the text-to-speech request
+        response = tts_client.synthesize_speech(
+            input=synthesis_input,
+            voice=voice_params,
+            audio_config=audio_config,
+        )
+        
+        audio_content = response.audio_content
+        
     except Exception as exc:  # pragma: no cover - network dependent
-        raise RuntimeError("gTTS synthesis failed") from exc
+        raise RuntimeError(f"Google Cloud TTS synthesis failed: {exc}") from exc
 
     filename = f"{uuid.uuid4().hex}.mp3"
     file_path = AUDIO_STORAGE_DIR / filename
     with file_path.open("wb") as audio_file:
-        audio_file.write(buffer.getvalue())
+        audio_file.write(audio_content)
 
     return filename
 

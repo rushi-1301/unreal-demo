@@ -1,5 +1,4 @@
 fastapi
 uvicorn[standard]
-edge-tts
-gTTS
+google-cloud-texttospeech
 deep-translator
